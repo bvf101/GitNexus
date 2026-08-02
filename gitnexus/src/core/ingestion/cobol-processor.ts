@@ -24,6 +24,7 @@ import {
   type CobolRegexResults,
 } from './cobol/cobol-preprocessor.js';
 import { expandCopies } from './cobol/cobol-copy-expander.js';
+import { createCobolDynamicValueResolver } from './cobol/cobol-dynamic-resolver.js';
 import { processJclFiles } from './cobol/jcl-processor.js';
 
 import { logger } from '../logger.js';
@@ -249,17 +250,22 @@ export const processCobol = (
 
     if (
       rel.reason?.startsWith('cobol-call-unresolved') ||
+      rel.reason === 'cobol-call-dynamic-unresolved' ||
       rel.reason === 'cobol-cancel-unresolved'
     ) {
       // Replace unresolved CALL/CANCEL with resolved edge
-      const resolvedReason =
-        rel.reason === 'cobol-cancel-unresolved' ? 'cobol-cancel' : 'cobol-call';
+      const resolvedReason = rel.reason.replace('-unresolved', '');
       graph.addRelationship({
         id: rel.id + ':resolved',
         type: 'CALLS',
         sourceId: rel.sourceId,
         targetId: resolvedId,
-        confidence: rel.reason === 'cobol-cancel-unresolved' ? 0.9 : 0.95,
+        confidence:
+          rel.reason === 'cobol-call-dynamic-unresolved'
+            ? 0.8
+            : rel.reason === 'cobol-cancel-unresolved'
+              ? 0.9
+              : 0.95,
         reason: resolvedReason,
       });
     } else if (rel.reason?.startsWith('cics-') && rel.reason.endsWith('-unresolved')) {
@@ -269,7 +275,7 @@ export const processCobol = (
         type: 'CALLS',
         sourceId: rel.sourceId,
         targetId: resolvedId,
-        confidence: 0.95,
+        confidence: rel.reason.includes('-dynamic-') ? 0.8 : 0.95,
         reason: rel.reason.replace('-unresolved', ''),
       });
     }
@@ -328,6 +334,29 @@ function buildDataItemMap(
     }
   }
   return map;
+}
+
+function addResolvedCicsTargetNode(
+  graph: KnowledgeGraph,
+  label: 'CodeElement' | 'Record',
+  id: string,
+  name: string,
+  kind: string,
+  filePath: string,
+  line: number,
+): void {
+  graph.addNode({
+    id,
+    label,
+    properties: {
+      name,
+      filePath,
+      startLine: toZeroBasedLine(line),
+      endLine: toZeroBasedLine(line),
+      language: SupportedLanguages.Cobol,
+      description: `resolved-dynamic-cics-${kind}`,
+    },
+  });
 }
 
 function mapToGraph(
@@ -530,6 +559,20 @@ function mapToGraph(
 
   // ── Build data item Map early (needed by CALL USING, CICS INTO/FROM, MOVE, and USING) ──
   const dataItemMap = buildDataItemMap(extracted.dataItems, filePath);
+  const resolveDynamicValues = createCobolDynamicValueResolver(extracted);
+
+  const possibleProgramNames = (dataName: string, line: number): string[] =>
+    resolveDynamicValues(dataName, line).filter(
+      (value) => value.length <= 128 && /[A-Z@#$]/.test(value),
+    );
+
+  const possibleTransactionIds = (dataName: string, line: number): string[] =>
+    resolveDynamicValues(dataName, line).filter((value) => /^[A-Z0-9@#$]{1,4}$/.test(value));
+
+  const possibleResourceNames = (dataName: string, line: number): string[] =>
+    resolveDynamicValues(dataName, line).filter((value) =>
+      /^[A-Z0-9@#$][A-Z0-9@#$-]*$/.test(value),
+    );
 
   // ── OCCURS DEPENDING ON -> ACCESSES edges (variable-length table deps) ──
   for (const item of extracted.dataItems) {
@@ -607,10 +650,16 @@ function mapToGraph(
   // ── CALL -> CALLS relationship (cross-program) ──────────────────
   for (const call of extracted.calls) {
     if (!call.isQuoted) {
-      // Dynamic CALL via data item — not statically resolvable.
-      // Emit a CodeElement annotation for visibility in impact analysis.
+      const resolvedTargets = possibleProgramNames(call.target, call.line);
+      const dynamicCallId = generateId(
+        'CodeElement',
+        `${filePath}:dynamic-call:${call.target}:L${call.line}`,
+      );
+
+      // Dynamic CALL via data item. Keep the annotation even when value flow
+      // resolves one or more targets so the indirect callsite stays visible.
       graph.addNode({
-        id: generateId('CodeElement', `${filePath}:dynamic-call:${call.target}:L${call.line}`),
+        id: dynamicCallId,
         label: 'CodeElement',
         properties: {
           name: `CALL ${call.target}`,
@@ -618,7 +667,10 @@ function mapToGraph(
           startLine: toZeroBasedLine(call.line),
           endLine: toZeroBasedLine(call.line),
           language: SupportedLanguages.Cobol,
-          description: 'dynamic-call (target is a data item, not resolvable statically)',
+          description:
+            resolvedTargets.length > 0
+              ? `dynamic-call resolved-targets:[${resolvedTargets.join(',')}]`
+              : 'dynamic-call (target is a data item, unresolved)',
         },
       });
       const dynCallOwner = owningModuleId(call.line);
@@ -626,13 +678,23 @@ function mapToGraph(
         id: generateId('CONTAINS', `${dynCallOwner}->dynamic-call:${call.target}:L${call.line}`),
         type: 'CONTAINS',
         sourceId: dynCallOwner,
-        targetId: generateId(
-          'CodeElement',
-          `${filePath}:dynamic-call:${call.target}:L${call.line}`,
-        ),
+        targetId: dynamicCallId,
         confidence: 1.0,
         reason: 'cobol-dynamic-call',
       });
+
+      for (const targetName of resolvedTargets) {
+        const targetModuleId = moduleNodeIds.get(targetName);
+        const targetId = targetModuleId ?? generateId('Module', `<unresolved>:${targetName}`);
+        graph.addRelationship({
+          id: generateId('CALLS', `${dynCallOwner}->dynamic-call->${targetName}:L${call.line}`),
+          type: 'CALLS',
+          sourceId: dynCallOwner,
+          targetId,
+          confidence: targetModuleId ? 0.8 : 0.45,
+          reason: targetModuleId ? 'cobol-call-dynamic' : 'cobol-call-dynamic-unresolved',
+        });
+      }
 
       // CALL USING parameters for dynamic call too
       if (call.parameters && call.parameters.length > 0) {
@@ -811,6 +873,36 @@ function mapToGraph(
 
   // ── EXEC CICS blocks -> CodeElement nodes + CALLS edges ────────
   for (const cics of extracted.execCicsBlocks) {
+    const programTargets =
+      cics.programName && cics.programIsLiteral === false
+        ? possibleProgramNames(cics.programName, cics.line)
+        : cics.programName
+          ? [cics.programName.toUpperCase()]
+          : [];
+    const transactionTargets =
+      cics.transId && cics.transIdIsLiteral === false
+        ? possibleTransactionIds(cics.transId, cics.line)
+        : cics.transId
+          ? [cics.transId.toUpperCase()]
+          : [];
+    const fileTargets =
+      cics.fileName && cics.fileIsLiteral === false
+        ? possibleResourceNames(cics.fileName, cics.line)
+        : cics.fileName
+          ? [cics.fileName.toUpperCase()]
+          : [];
+    const queueTargets =
+      cics.queueName && cics.queueIsLiteral === false
+        ? possibleResourceNames(cics.queueName, cics.line)
+        : cics.queueName
+          ? [cics.queueName.toUpperCase()]
+          : [];
+    const mapTargets =
+      cics.mapName && cics.mapIsLiteral === false
+        ? possibleResourceNames(cics.mapName, cics.line)
+        : cics.mapName
+          ? [cics.mapName.toUpperCase()]
+          : [];
     const cicsId = generateId('CodeElement', `${filePath}:exec-cics:L${cics.line}`);
     graph.addNode({
       id: cicsId,
@@ -823,12 +915,16 @@ function mapToGraph(
         language: SupportedLanguages.Cobol,
         description:
           [
-            cics.mapName && `map:${cics.mapName}`,
+            cics.mapName &&
+              `map:${cics.mapName}${cics.mapIsLiteral === false ? ` (dynamic${mapTargets.length > 0 ? ` -> ${mapTargets.join(',')}` : ''})` : ''}`,
             cics.programName &&
-              `program:${cics.programName}${cics.programIsLiteral === false ? ' (dynamic)' : ''}`,
-            cics.transId && `transid:${cics.transId}`,
-            cics.fileName && `file:${cics.fileName}`,
-            cics.queueName && `queue:${cics.queueName}`,
+              `program:${cics.programName}${cics.programIsLiteral === false ? ` (dynamic${programTargets.length > 0 ? ` -> ${programTargets.join(',')}` : ''})` : ''}`,
+            cics.transId &&
+              `transid:${cics.transId}${cics.transIdIsLiteral === false ? ` (dynamic${transactionTargets.length > 0 ? ` -> ${transactionTargets.join(',')}` : ''})` : ''}`,
+            cics.fileName &&
+              `file:${cics.fileName}${cics.fileIsLiteral === false ? ` (dynamic${fileTargets.length > 0 ? ` -> ${fileTargets.join(',')}` : ''})` : ''}`,
+            cics.queueName &&
+              `queue:${cics.queueName}${cics.queueIsLiteral === false ? ` (dynamic${queueTargets.length > 0 ? ` -> ${queueTargets.join(',')}` : ''})` : ''}`,
             cics.labelName && `label:${cics.labelName}`,
           ]
             .filter(Boolean)
@@ -847,12 +943,14 @@ function mapToGraph(
     // LINK/XCTL -> cross-program CALLS (handles both literal and variable PROGRAM)
     if (cics.programName && ['LINK', 'XCTL', 'LOAD'].includes(cics.command)) {
       if (cics.programIsLiteral === false) {
-        // Dynamic PROGRAM reference via variable — annotate, don't resolve
+        // Dynamic PROGRAM reference via variable — annotate and emit every
+        // conservative value-flow candidate as a lower-confidence CALLS edge.
+        const dynamicProgramId = generateId(
+          'CodeElement',
+          `${filePath}:cics-dynamic-pgm:${cics.programName}:L${cics.line}`,
+        );
         graph.addNode({
-          id: generateId(
-            'CodeElement',
-            `${filePath}:cics-dynamic-pgm:${cics.programName}:L${cics.line}`,
-          ),
+          id: dynamicProgramId,
           label: 'CodeElement',
           properties: {
             name: `CICS ${cics.command} ${cics.programName}`,
@@ -860,7 +958,10 @@ function mapToGraph(
             startLine: toZeroBasedLine(cics.line),
             endLine: toZeroBasedLine(cics.line),
             language: SupportedLanguages.Cobol,
-            description: `cics-dynamic-program (target is data item ${cics.programName})`,
+            description:
+              programTargets.length > 0
+                ? `cics-dynamic-program data-item:${cics.programName} resolved-targets:[${programTargets.join(',')}]`
+                : `cics-dynamic-program data-item:${cics.programName} unresolved`,
           },
         });
         graph.addRelationship({
@@ -870,18 +971,28 @@ function mapToGraph(
           ),
           type: 'CONTAINS',
           sourceId: cicsOwner,
-          targetId: generateId(
-            'CodeElement',
-            `${filePath}:cics-dynamic-pgm:${cics.programName}:L${cics.line}`,
-          ),
+          targetId: dynamicProgramId,
           confidence: 1.0,
           reason: 'cics-dynamic-program',
         });
+
+        for (const targetName of programTargets) {
+          const targetModuleId = moduleNodeIds.get(targetName);
+          const targetId = targetModuleId ?? generateId('Module', `<unresolved>:${targetName}`);
+          const reason = `cics-${cics.command.toLowerCase()}-dynamic`;
+          graph.addRelationship({
+            id: generateId('CALLS', `${cicsOwner}->${reason}->${targetName}:L${cics.line}`),
+            type: 'CALLS',
+            sourceId: cicsOwner,
+            targetId,
+            confidence: targetModuleId ? 0.8 : 0.45,
+            reason: targetModuleId ? reason : `${reason}-unresolved`,
+          });
+        }
       } else {
-        const cicsTargetModuleId = moduleNodeIds.get(cics.programName.toUpperCase());
-        const targetId =
-          cicsTargetModuleId ??
-          generateId('Module', `<unresolved>:${cics.programName.toUpperCase()}`);
+        const targetName = programTargets[0] ?? cics.programName.toUpperCase();
+        const cicsTargetModuleId = moduleNodeIds.get(targetName);
+        const targetId = cicsTargetModuleId ?? generateId('Module', `<unresolved>:${targetName}`);
         const cicsReason = `cics-${cics.command.toLowerCase()}`;
         graph.addRelationship({
           id: generateId(
@@ -899,7 +1010,6 @@ function mapToGraph(
 
     // CICS FILE I/O -> ACCESSES edges (READ/WRITE/REWRITE/DELETE/STARTBR/ENDBR FILE)
     if (cics.fileName) {
-      const fileRecordId = generateId('Record', `<cics-file>:${cics.fileName.toUpperCase()}`);
       const ioCommand = cics.command.toUpperCase();
       const isRead = [
         'READ',
@@ -911,68 +1021,128 @@ function mapToGraph(
         'ENDBR',
       ].includes(ioCommand);
       const isWrite = ['WRITE', 'REWRITE', 'DELETE'].includes(ioCommand);
-      const reason = isRead ? 'cics-file-read' : isWrite ? 'cics-file-write' : 'cics-file-access';
-      graph.addRelationship({
-        id: generateId('ACCESSES', `${cicsId}->file->${cics.fileName}:L${cics.line}`),
-        type: 'ACCESSES',
-        sourceId: cicsId,
-        targetId: fileRecordId,
-        confidence: 0.9,
-        reason,
-      });
+      const baseReason = isRead
+        ? 'cics-file-read'
+        : isWrite
+          ? 'cics-file-write'
+          : 'cics-file-access';
+      const targets = fileTargets.length > 0 ? fileTargets : [cics.fileName.toUpperCase()];
+      for (const targetName of targets) {
+        const fileRecordId = generateId('Record', `<cics-file>:${targetName}`);
+        if (cics.fileIsLiteral === false && fileTargets.length > 0) {
+          addResolvedCicsTargetNode(
+            graph,
+            'Record',
+            fileRecordId,
+            targetName,
+            'file',
+            filePath,
+            cics.line,
+          );
+        }
+        graph.addRelationship({
+          id: generateId('ACCESSES', `${cicsId}->file->${targetName}:L${cics.line}`),
+          type: 'ACCESSES',
+          sourceId: cicsId,
+          targetId: fileRecordId,
+          confidence: cics.fileIsLiteral === false ? 0.75 : 0.9,
+          reason:
+            cics.fileIsLiteral === false && fileTargets.length > 0
+              ? `${baseReason}-dynamic`
+              : baseReason,
+        });
+      }
     }
 
     // CICS QUEUE -> ACCESSES edge with differentiated reason (WRITEQ/READQ/DELETEQ TS/TD)
     if (cics.queueName) {
-      const queueId = generateId('Record', `<queue>:${cics.queueName}`);
       const qCmd = cics.command.toUpperCase();
-      const qReason = qCmd.startsWith('READQ')
+      const baseReason = qCmd.startsWith('READQ')
         ? 'cics-queue-read'
         : qCmd.startsWith('WRITEQ')
           ? 'cics-queue-write'
           : qCmd.startsWith('DELETEQ')
             ? 'cics-queue-delete'
             : 'cics-queue';
-      graph.addRelationship({
-        id: generateId('ACCESSES', `${cicsId}->queue->${cics.queueName}:L${cics.line}`),
-        type: 'ACCESSES',
-        sourceId: cicsId,
-        targetId: queueId,
-        confidence: 0.85,
-        reason: qReason,
-      });
+      const targets = queueTargets.length > 0 ? queueTargets : [cics.queueName.toUpperCase()];
+      for (const targetName of targets) {
+        const queueId = generateId('Record', `<queue>:${targetName}`);
+        if (cics.queueIsLiteral === false && queueTargets.length > 0) {
+          addResolvedCicsTargetNode(
+            graph,
+            'Record',
+            queueId,
+            targetName,
+            'queue',
+            filePath,
+            cics.line,
+          );
+        }
+        graph.addRelationship({
+          id: generateId('ACCESSES', `${cicsId}->queue->${targetName}:L${cics.line}`),
+          type: 'ACCESSES',
+          sourceId: cicsId,
+          targetId: queueId,
+          confidence: cics.queueIsLiteral === false ? 0.75 : 0.85,
+          reason:
+            cics.queueIsLiteral === false && queueTargets.length > 0
+              ? `${baseReason}-dynamic`
+              : baseReason,
+        });
+      }
     }
 
     // CICS RETURN/START TRANSID -> CALLS edge (transaction flow)
     if (cics.transId) {
       const cmd = cics.command.toUpperCase();
       if (cmd === 'RETURN' || cmd.startsWith('START')) {
-        const transNodeId = generateId('CodeElement', `<transid>:${cics.transId}`);
-        graph.addRelationship({
-          id: generateId(
-            'CALLS',
-            `${cicsOwner}->${cmd === 'RETURN' ? 'return' : 'start'}-transid->${cics.transId}:L${cics.line}`,
-          ),
-          type: 'CALLS',
-          sourceId: cicsOwner,
-          targetId: transNodeId,
-          confidence: 0.8,
-          reason: cmd === 'RETURN' ? 'cics-return-transid' : 'cics-start-transid',
-        });
+        const baseReason = cmd === 'RETURN' ? 'cics-return-transid' : 'cics-start-transid';
+        for (const targetName of transactionTargets) {
+          const transNodeId = generateId('CodeElement', `<transid>:${targetName}`);
+          if (cics.transIdIsLiteral === false) {
+            addResolvedCicsTargetNode(
+              graph,
+              'CodeElement',
+              transNodeId,
+              targetName,
+              'transaction',
+              filePath,
+              cics.line,
+            );
+          }
+          graph.addRelationship({
+            id: generateId(
+              'CALLS',
+              `${cicsOwner}->${cmd === 'RETURN' ? 'return' : 'start'}-transid->${targetName}:L${cics.line}`,
+            ),
+            type: 'CALLS',
+            sourceId: cicsOwner,
+            targetId: transNodeId,
+            confidence: cics.transIdIsLiteral === false ? 0.75 : 0.8,
+            reason: cics.transIdIsLiteral === false ? `${baseReason}-dynamic` : baseReason,
+          });
+        }
       }
     }
 
     // CICS MAP -> ACCESSES edge (screen/mapset traceability)
     if (cics.mapName) {
-      const mapId = generateId('Record', `<map>:${cics.mapName}`);
-      graph.addRelationship({
-        id: generateId('ACCESSES', `${cicsId}->map->${cics.mapName}:L${cics.line}`),
-        type: 'ACCESSES',
-        sourceId: cicsId,
-        targetId: mapId,
-        confidence: 0.85,
-        reason: 'cics-map',
-      });
+      const targets = mapTargets.length > 0 ? mapTargets : [cics.mapName.toUpperCase()];
+      for (const targetName of targets) {
+        const mapId = generateId('Record', `<map>:${targetName}`);
+        if (cics.mapIsLiteral === false && mapTargets.length > 0) {
+          addResolvedCicsTargetNode(graph, 'Record', mapId, targetName, 'map', filePath, cics.line);
+        }
+        graph.addRelationship({
+          id: generateId('ACCESSES', `${cicsId}->map->${targetName}:L${cics.line}`),
+          type: 'ACCESSES',
+          sourceId: cicsId,
+          targetId: mapId,
+          confidence: cics.mapIsLiteral === false ? 0.75 : 0.85,
+          reason:
+            cics.mapIsLiteral === false && mapTargets.length > 0 ? 'cics-map-dynamic' : 'cics-map',
+        });
+      }
     }
 
     // CICS INTO(data-area) -> ACCESSES edge (data write target)

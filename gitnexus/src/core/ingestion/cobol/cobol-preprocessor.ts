@@ -113,12 +113,15 @@ export interface CobolRegexResults {
     line: number;
     command: string;
     mapName?: string;
+    mapIsLiteral?: boolean;
     programName?: string;
     programIsLiteral?: boolean;
     transId?: string;
+    transIdIsLiteral?: boolean;
     fileName?: string;
     fileIsLiteral?: boolean;
     queueName?: string;
+    queueIsLiteral?: boolean;
     labelName?: string;
     intoField?: string;
     fromField?: string;
@@ -137,6 +140,13 @@ export interface CobolRegexResults {
     line: number;
     caller: string | null;
     corresponding: boolean;
+  }>;
+  /** Literal assignments used by the conservative dynamic-target resolver. */
+  literalMoves: Array<{
+    value: string;
+    targets: string[];
+    line: number;
+    caller: string | null;
   }>;
 
   // Phase 4: Additional structural features
@@ -425,6 +435,7 @@ const RE_ENTRY = /\bENTRY\s+(?:"([^"]+)"|'([^']+)')(?:\s+USING\s+([\s\S]*?))?(?:
 // MOVE statement — captures everything after TO for multi-target extraction
 const RE_MOVE =
   /\bMOVE\s+((?:CORRESPONDING|CORR)\s+)?([A-Z0-9][A-Z0-9-]+(?:\([^)]*\))*)\s+TO\s+(.+)/i;
+const RE_MOVE_LITERAL = /\bMOVE\s+(?:"([^"]*)"|'([^']*)')\s+TO\s+(.+)/i;
 const MOVE_SKIP = new Set([
   'SPACES',
   'ZEROS',
@@ -935,7 +946,10 @@ function parseExecCicsBlock(
 
   // MAP name: MAP('name') or MAP("name") or MAP(IDENTIFIER)
   const mapMatch = body.match(/\bMAP\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z0-9][A-Z0-9-]+))\s*\)/i);
-  if (mapMatch) result.mapName = mapMatch[1] ?? mapMatch[2];
+  if (mapMatch) {
+    result.mapName = mapMatch[1] ?? mapMatch[2];
+    result.mapIsLiteral = mapMatch[1] !== undefined;
+  }
 
   // PROGRAM name: PROGRAM('name') or PROGRAM("name") or PROGRAM(VARIABLE)
   const progMatch = body.match(/\bPROGRAM\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z0-9][A-Z0-9-]+))\s*\)/i);
@@ -946,7 +960,10 @@ function parseExecCicsBlock(
 
   // TRANSID: TRANSID('name') or TRANSID("name") or TRANSID(VARIABLE)
   const transMatch = body.match(/\bTRANSID\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z0-9][A-Z0-9-]+))\s*\)/i);
-  if (transMatch) result.transId = transMatch[1] ?? transMatch[2];
+  if (transMatch) {
+    result.transId = transMatch[1] ?? transMatch[2];
+    result.transIdIsLiteral = transMatch[1] !== undefined;
+  }
 
   // FILE/DATASET: FILE('name') or DATASET('name') or FILE(VARIABLE)
   // Used in CICS READ, WRITE, REWRITE, DELETE, STARTBR, READNEXT, READPREV, ENDBR
@@ -960,7 +977,10 @@ function parseExecCicsBlock(
 
   // QUEUE: QUEUE('name') — used in WRITEQ/READQ TS/TD
   const queueMatch = body.match(/\bQUEUE\s*\(\s*(?:['"]([^'"]+)['"]|([A-Z0-9][A-Z0-9-]+))\s*\)/i);
-  if (queueMatch) result.queueName = queueMatch[1] ?? queueMatch[2];
+  if (queueMatch) {
+    result.queueName = queueMatch[1] ?? queueMatch[2];
+    result.queueIsLiteral = queueMatch[1] !== undefined;
+  }
 
   // HANDLE ABEND LABEL(paragraph-name) — error handler target
   const labelMatch = body.match(/\bLABEL\s*\(\s*([A-Z0-9][A-Z0-9-]+)\s*\)/i);
@@ -1043,6 +1063,7 @@ export function extractCobolSymbolsWithRegex(
     procedureUsing: [],
     entryPoints: [],
     moves: [],
+    literalMoves: [],
     gotos: [],
     sorts: [],
     searches: [],
@@ -1999,7 +2020,23 @@ export function extractCobolSymbolsWithRegex(
       }
     }
 
-    // MOVE statement (skip literals and figurative constants)
+    // Literal MOVE assignment. Keep it separate from `moves` so existing
+    // data-access graph semantics remain stable; it feeds only conservative
+    // dynamic target resolution (CALL/CICS resources).
+    const literalMoveMatch = line.match(RE_MOVE_LITERAL);
+    if (literalMoveMatch) {
+      const targets = extractMoveTargets(literalMoveMatch[3]);
+      if (targets.length > 0) {
+        result.literalMoves.push({
+          value: literalMoveMatch[1] ?? literalMoveMatch[2] ?? '',
+          targets,
+          line: lineNum,
+          caller: currentParagraph,
+        });
+      }
+    }
+
+    // MOVE statement (identifier sources only; literals are captured above)
     const moveMatch = line.match(RE_MOVE);
     if (moveMatch) {
       const from = moveMatch[2].toUpperCase();
