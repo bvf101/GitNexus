@@ -215,6 +215,13 @@ describe('LadybugDB Schema', () => {
       expect(RELATION_SCHEMA).toContain('FROM Interface TO CodeElement');
     });
 
+    it('persists the JOB -> PROC -> internal step JCL topology', () => {
+      const declaredPairs = parseRelationSchemaPairs(RELATION_SCHEMA);
+      for (const pair of ['CodeElement|CodeElement', 'CodeElement|Module', 'Module|CodeElement']) {
+        expect(declaredPairs.has(pair)).toBe(true);
+      }
+    });
+
     it('declares the Swift enum/property member-containment pairs (#2769)', () => {
       // Asserted through the runtime's own parser, not raw strings, so a
       // cosmetic DDL formatting change cannot fail this without a semantic

@@ -16,15 +16,37 @@
 
 export interface JclParseResults {
   jobs: Array<{ name: string; line: number; class?: string; msgclass?: string }>;
-  steps: Array<{ name: string; jobName: string; program?: string; proc?: string; line: number }>;
-  ddStatements: Array<{
-    ddName: string;
-    stepName: string;
-    dataset?: string;
-    disp?: string;
+  steps: Array<{
+    name: string;
+    jobName: string;
+    ownerProc?: string;
+    program?: string;
+    proc?: string;
     line: number;
   }>;
-  procs: Array<{ name: string; line: number; isInStream: boolean }>;
+  ddStatements: Array<{
+    ddName: string;
+    qualifiedName: string;
+    jobName: string;
+    stepName: string;
+    invocationStepName: string;
+    ownerProc?: string;
+    overridePath: string[];
+    dataset?: string;
+    disp?: string;
+    inputType: 'dataset' | 'inline' | 'data' | 'other';
+    delimiter?: string;
+    content?: string;
+    line: number;
+    endLine: number;
+  }>;
+  procs: Array<{
+    name: string;
+    line: number;
+    endLine?: number;
+    isInStream: boolean;
+    jobName?: string;
+  }>;
   includes: Array<{ member: string; line: number }>;
   sets: Array<{ variable: string; value: string; line: number }>;
   jcllib: Array<{ order: string[]; line: number }>;
@@ -37,13 +59,13 @@ export interface JclParseResults {
 // We handle continuations by joining lines before matching.
 
 /** Match //jobname JOB ... */
-const JOB_RE = /^\/\/(\w{1,8})\s+JOB\s+(.*)/i;
+const JOB_RE = /^\/\/([A-Z0-9@$#]{1,8})\s+JOB\s+(.*)/i;
 
 /** Match //stepname EXEC PGM=program or //stepname EXEC procname */
-const EXEC_RE = /^\/\/(\w{1,8})\s+EXEC\s+(.*)/i;
+const EXEC_RE = /^\/\/([A-Z0-9@$#]{1,8})\s+EXEC\s+(.*)/i;
 
 /** Match //ddname DD ... */
-const DD_RE = /^\/\/(\w{1,8})\s+DD\s+(.*)/i;
+const DD_RE = /^\/\/([A-Z0-9@$#]{1,8}(?:\.[A-Z0-9@$#]{1,8})*)\s+DD(?:\s+(.*))?$/i;
 
 /** Match // JCLLIB ORDER=(lib1,lib2,...) */
 const JCLLIB_RE = /^\/\/\s+JCLLIB\s+ORDER=\(([^)]+)\)/i;
@@ -64,7 +86,7 @@ const INCLUDE_RE = /^\/\/\s+INCLUDE\s+MEMBER=(\w+)/i;
 const SET_RE = /^\/\/\s+SET\s+(\w+)=(.+)/i;
 
 /** Match // PROC or //name PROC */
-const PROC_RE = /^\/\/(\w*)\s+PROC\b/i;
+const PROC_RE = /^\/\/([A-Z0-9@$#]{0,8})\s+PROC\b/i;
 
 /** Match // PEND */
 const PEND_RE = /^\/\/\s+PEND\b/i;
@@ -83,8 +105,10 @@ function extractPgm(params: string): string | undefined {
 }
 
 function extractProc(params: string): string | undefined {
-  // If no PGM= keyword, the first positional parameter is the proc name
+  // Both EXEC PROC=name and the positional EXEC name form are valid JCL.
   if (/PGM=/i.test(params)) return undefined;
+  const explicitProc = extractParam(params, 'PROC');
+  if (explicitProc) return explicitProc.toUpperCase();
   const cleaned = params.replace(/,.*/, '').trim();
   // Proc name is the first token (no = sign)
   if (cleaned && !cleaned.includes('=')) {
@@ -100,6 +124,21 @@ function extractDsn(params: string): string | undefined {
 function extractDisp(params: string): string | undefined {
   const m = params.match(/DISP=\(?\s*([^),\s]+)/i);
   return m ? m[1] : undefined;
+}
+
+function extractDlm(params: string): string | undefined {
+  const match = params.match(/\bDLM=(?:'([^']{1,2})'|"([^"]{1,2})"|([^,\s]{1,2}))/i);
+  return match ? (match[1] ?? match[2] ?? match[3]) : undefined;
+}
+
+function procNameFromFile(filePath: string): string {
+  const fileName = filePath.split(/[\\/]/).pop() ?? '';
+  const baseName = fileName.replace(/\.[^.]+$/, '').toUpperCase();
+  return /^[A-Z0-9@$#]{1,8}$/.test(baseName) ? baseName : '';
+}
+
+function isDelimiterLine(text: string, delimiter: string): boolean {
+  return text.startsWith(delimiter) && text.slice(delimiter.length).trim().length === 0;
 }
 
 /**
@@ -153,7 +192,8 @@ export function parseJcl(content: string, filePath: string): JclParseResults {
   let currentStepName = '';
   let inStreamProcName = '';
 
-  for (const { text, lineNum } of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+    const { text, lineNum } = lines[lineIndex];
     // Skip JCL comments (starting with //* )
     if (text.startsWith('//*')) continue;
     // Skip non-JCL lines (don't start with //)
@@ -162,17 +202,30 @@ export function parseJcl(content: string, filePath: string): JclParseResults {
     // PROC definition (in-stream)
     const procMatch = text.match(PROC_RE);
     if (procMatch) {
-      const procName = procMatch[1] || inStreamProcName;
+      const procName = procMatch[1] || procNameFromFile(filePath);
       if (procName) {
-        results.procs.push({ name: procName.toUpperCase(), line: lineNum, isInStream: true });
+        results.procs.push({
+          name: procName.toUpperCase(),
+          line: lineNum,
+          isInStream: currentJobName.length > 0,
+          jobName: currentJobName || undefined,
+        });
       }
       inStreamProcName = procName?.toUpperCase() || '';
+      currentStepName = '';
       continue;
     }
 
     // PEND (end of in-stream proc)
     if (PEND_RE.test(text)) {
+      for (let procIndex = results.procs.length - 1; procIndex >= 0; procIndex--) {
+        if (results.procs[procIndex].name === inStreamProcName) {
+          results.procs[procIndex].endLine = lineNum;
+          break;
+        }
+      }
       inStreamProcName = '';
+      currentStepName = '';
       continue;
     }
 
@@ -221,6 +274,7 @@ export function parseJcl(content: string, filePath: string): JclParseResults {
     const jobMatch = text.match(JOB_RE);
     if (jobMatch) {
       currentJobName = jobMatch[1].toUpperCase();
+      currentStepName = '';
       const params = jobMatch[2];
       results.jobs.push({
         name: currentJobName,
@@ -242,6 +296,7 @@ export function parseJcl(content: string, filePath: string): JclParseResults {
       results.steps.push({
         name: currentStepName,
         jobName: currentJobName,
+        ownerProc: inStreamProcName || undefined,
         program: pgm?.toUpperCase(),
         proc: proc?.toUpperCase(),
         line: lineNum,
@@ -252,14 +307,63 @@ export function parseJcl(content: string, filePath: string): JclParseResults {
     // DD statement
     const ddMatch = text.match(DD_RE);
     if (ddMatch) {
-      const ddName = ddMatch[1].toUpperCase();
-      const params = ddMatch[2];
+      const qualifiedName = ddMatch[1].toUpperCase();
+      const nameParts = qualifiedName.split('.');
+      const ddName = nameParts[nameParts.length - 1];
+      const overridePath = nameParts.slice(0, -1);
+      const params = ddMatch[2] ?? '';
+      const dataset = extractDsn(params)?.toUpperCase();
+      const explicitDelimiter = extractDlm(params);
+      const inputType = dataset
+        ? 'dataset'
+        : /^\s*DATA\b/i.test(params)
+          ? 'data'
+          : /^\s*\*/.test(params)
+            ? 'inline'
+            : 'other';
+      const delimiter =
+        inputType === 'inline' || inputType === 'data' ? (explicitDelimiter ?? '/*') : undefined;
+      const contentLines: string[] = [];
+      let endLine = lineNum;
+
+      if (delimiter) {
+        let dataIndex = lineIndex + 1;
+        while (dataIndex < lines.length) {
+          const dataLine = lines[dataIndex];
+          if (isDelimiterLine(dataLine.text, delimiter)) {
+            endLine = dataLine.lineNum;
+            dataIndex++;
+            break;
+          }
+
+          // DD * without an explicit delimiter also ends when the next JCL
+          // statement begins. DD DATA and DLM= allow // in the payload.
+          if (inputType === 'inline' && !explicitDelimiter && dataLine.text.startsWith('//')) {
+            break;
+          }
+
+          contentLines.push(dataLine.text);
+          endLine = dataLine.lineNum;
+          dataIndex++;
+        }
+        lineIndex = dataIndex - 1;
+      }
+
       results.ddStatements.push({
         ddName,
-        stepName: currentStepName,
-        dataset: extractDsn(params)?.toUpperCase(),
+        qualifiedName,
+        jobName: currentJobName,
+        stepName: overridePath[overridePath.length - 1] ?? currentStepName,
+        invocationStepName: currentStepName,
+        ownerProc: inStreamProcName || undefined,
+        overridePath,
+        dataset,
         disp: extractDisp(params)?.toUpperCase(),
+        inputType,
+        delimiter,
+        content: delimiter ? contentLines.join('\n') : undefined,
         line: lineNum,
+        endLine,
       });
       continue;
     }

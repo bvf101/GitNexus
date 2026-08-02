@@ -73,12 +73,12 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 34 (Spring AOP relation pairs #2416, then receiver-chain wire format v2)', () => {
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 35 (JCL relation pairs after receiver-chain wire format v2)', () => {
     // Moves with every bump BY DESIGN — that is the point of pinning it. A
     // change that alters emitted ids or edges without bumping would otherwise
     // ship silently, and an existing index would keep serving the old graph
     // through the reuse gate below.
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(34);
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(35);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {

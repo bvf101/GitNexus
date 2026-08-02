@@ -687,8 +687,13 @@ export interface RepoMeta {
  * Numbered 34, not 33: `main` took 33 for Spring AOP (#2416) mid-flight, landing
  * on exactly this branch's number — the seventh collision in this series and the
  * first exact clash. Re-check against origin/main before merge.
+ *
+ * v35: persisted JCL topology gains CodeElement→CodeElement,
+ * CodeElement→Module, and Module→CodeElement relation pairs. These are required
+ * for Job→step, step→program/PROC/dataset, and PROC→internal-step edges; older
+ * LadybugDB relation tables cannot accept those pairs, so force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 34;
+export const INCREMENTAL_SCHEMA_VERSION = 35;
 
 export interface IndexedRepo {
   repoPath: string;

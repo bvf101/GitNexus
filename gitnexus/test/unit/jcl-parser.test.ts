@@ -53,6 +53,13 @@ describe('parseJcl', () => {
       expect(r.steps[0].proc).toBe('MYPROC');
     });
 
+    it('extracts step with explicit PROC=name syntax', () => {
+      const jcl = ['//MYJOB   JOB (ACCT)', '//STEP1   EXEC PROC=MYPROC,ENV=PROD'].join('\n');
+      const r = parseJcl(jcl, 'test.jcl');
+      expect(r.steps).toHaveLength(1);
+      expect(r.steps[0]).toMatchObject({ name: 'STEP1', proc: 'MYPROC' });
+    });
+
     it('associates step with current job', () => {
       const jcl = [
         '//JOB1    JOB (ACCT)',
@@ -106,17 +113,122 @@ describe('parseJcl', () => {
       expect(r.ddStatements[0].stepName).toBe('STEP1');
       expect(r.ddStatements[1].stepName).toBe('STEP2');
     });
+
+    it('captures inline SYSIN DD * content and its source range', () => {
+      const jcl = [
+        '//MYJOB   JOB (ACCT)',
+        '//STEP1   EXEC PGM=SORT',
+        '//SYSIN   DD *',
+        '  SORT FIELDS=COPY',
+        "  INCLUDE COND=(1,1,CH,EQ,C'A')",
+        '/*',
+        '//STEP2   EXEC PGM=IEFBR14',
+      ].join('\n');
+      const r = parseJcl(jcl, 'test.jcl');
+
+      expect(r.ddStatements).toHaveLength(1);
+      expect(r.ddStatements[0]).toMatchObject({
+        ddName: 'SYSIN',
+        qualifiedName: 'SYSIN',
+        stepName: 'STEP1',
+        inputType: 'inline',
+        delimiter: '/*',
+        line: 3,
+        endLine: 6,
+        content: "  SORT FIELDS=COPY\n  INCLUDE COND=(1,1,CH,EQ,C'A')",
+      });
+      expect(r.steps.map((step) => step.name)).toEqual(['STEP1', 'STEP2']);
+    });
+
+    it('captures DD DATA with a custom delimiter, including // payload lines', () => {
+      const jcl = [
+        '//MYJOB   JOB (ACCT)',
+        '//STEP1   EXEC PGM=IDCAMS',
+        '//SYSIN   DD DATA,DLM=@@',
+        '// DELETE APP.OLD.DATA',
+        '  SET MAXCC=0',
+        '@@',
+        '//STEP2   EXEC PGM=IEFBR14',
+      ].join('\n');
+      const r = parseJcl(jcl, 'test.jcl');
+
+      expect(r.ddStatements[0]).toMatchObject({
+        inputType: 'data',
+        delimiter: '@@',
+        content: '// DELETE APP.OLD.DATA\n  SET MAXCC=0',
+        endLine: 6,
+      });
+      expect(r.steps.map((step) => step.name)).toEqual(['STEP1', 'STEP2']);
+    });
+
+    it('identifies dataset-backed SYSIN', () => {
+      const jcl = [
+        '//MYJOB   JOB (ACCT)',
+        '//STEP1   EXEC PGM=SORT',
+        '//SYSIN   DD DSN=APP.SORT.CARDS,DISP=SHR',
+      ].join('\n');
+      const r = parseJcl(jcl, 'test.jcl');
+      expect(r.ddStatements[0]).toMatchObject({
+        ddName: 'SYSIN',
+        inputType: 'dataset',
+        dataset: 'APP.SORT.CARDS',
+      });
+    });
+
+    it('identifies a qualified PROC step DD override', () => {
+      const jcl = [
+        '//MYJOB   JOB (ACCT)',
+        '//RUNPROC EXEC PROC=PAYPROC',
+        '//PSTEP.SYSIN DD *',
+        '  SORT FIELDS=COPY',
+        '/*',
+      ].join('\n');
+      const r = parseJcl(jcl, 'test.jcl');
+      expect(r.ddStatements[0]).toMatchObject({
+        ddName: 'SYSIN',
+        qualifiedName: 'PSTEP.SYSIN',
+        jobName: 'MYJOB',
+        stepName: 'PSTEP',
+        invocationStepName: 'RUNPROC',
+        overridePath: ['PSTEP'],
+        inputType: 'inline',
+      });
+    });
   });
 
   // ── PROC definitions ────────────────────────────────────────────────
 
   describe('PROC definitions', () => {
     it('extracts in-stream PROC with name', () => {
-      const jcl = ['//MYPROC  PROC', '//STEP1   EXEC PGM=IEFBR14', '// PEND'].join('\n');
+      const jcl = [
+        '//MYJOB   JOB (ACCT)',
+        '//MYPROC  PROC',
+        '//STEP1   EXEC PGM=IEFBR14',
+        '// PEND',
+      ].join('\n');
       const r = parseJcl(jcl, 'test.jcl');
       expect(r.procs).toHaveLength(1);
       expect(r.procs[0].name).toBe('MYPROC');
       expect(r.procs[0].isInStream).toBe(true);
+      expect(r.steps[0]).toMatchObject({ ownerProc: 'MYPROC', jobName: 'MYJOB' });
+    });
+
+    it('classifies a standalone .proc member as catalogued', () => {
+      const jcl = ['//PAYPROC PROC', '//PSTEP   EXEC PGM=PAYPGM', '// PEND'].join('\n');
+      const r = parseJcl(jcl, 'PAYPROC.proc');
+      expect(r.procs[0]).toMatchObject({
+        name: 'PAYPROC',
+        isInStream: false,
+        line: 1,
+        endLine: 3,
+      });
+      expect(r.steps[0]).toMatchObject({ name: 'PSTEP', ownerProc: 'PAYPROC', jobName: '' });
+    });
+
+    it('uses the catalogued member file name for an unnamed PROC statement', () => {
+      const r = parseJcl('// PROC\n//PSTEP EXEC PGM=PAYPGM\n// PEND', 'PAYPROC.proc');
+      expect(r.procs[0]).toMatchObject({ name: 'PAYPROC', isInStream: false });
+      expect(r.steps[0].ownerProc).toBe('PAYPROC');
     });
 
     it('handles PROC/PEND pairs', () => {
