@@ -19,29 +19,29 @@ describe('direct JCL SYSIN semantics without PROC', () => {
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-jcl-direct-sysin-'));
     writeFixtureRepo(root, {
-      'DIRECT.jcl': [
-        '//DIRECT   JOB (ACCT)',
-        '//SORTSTEP EXEC PGM=SORT',
+      'GNXJOB02.jcl': [
+        '//GNXJOB02 JOB (GNXACCT)',
+        '//GNXSTP02 EXEC PGM=SORT',
         '//SYSIN    DD *',
         '  SORT FIELDS=(1,10,CH,A)',
         "  INCLUDE COND=(11,1,CH,EQ,C'A')",
         '/*',
-        '//AMSSTEP  EXEC PGM=IDCAMS',
+        '//GNXSTP03 EXEC PGM=IDCAMS',
         '//SYSIN    DD *',
-        '  DELETE APP.OLD.DATA',
-        '  DEFINE CLUSTER(NAME(APP.NEW.DATA))',
-        '  REPRO INDATASET(APP.INPUT) OUTDATASET(APP.OUTPUT)',
+        '  DELETE GNX.OLD.DATA',
+        '  DEFINE CLUSTER(NAME(GNX.NEW.DATA))',
+        '  REPRO INDATASET(GNX.INPUT) OUTDATASET(GNX.OUTPUT)',
         '/*',
-        '//DB2STEP  EXEC PGM=IKJEFT1B',
+        '//GNXSTP04 EXEC PGM=IKJEFT1B',
         '//SYSTSIN  DD *',
-        '  DSN SYSTEM(DB2P)',
-        "  RUN PROGRAM(PAYPGM) PLAN(PAYPLAN) LIB('APP.LOADLIB')",
+        '  DSN SYSTEM(GXDB)',
+        "  RUN PROGRAM(GNXPGM03) PLAN(GNXPLN01) LIB('GNX.LOADLIB')",
         '  END',
         '/*',
       ].join('\n'),
-      'PAYPGM.cbl': `>>SOURCE FREE
+      'GNXPGM03.cbl': `>>SOURCE FREE
 IDENTIFICATION DIVISION.
-PROGRAM-ID. PAYPGM.
+PROGRAM-ID. GNXPGM03.
 PROCEDURE DIVISION.
 MAIN.
 GOBACK.`,
@@ -59,15 +59,15 @@ GOBACK.`,
       edgeSet(
         getRelationships(result, 'CONTAINS').filter((edge) => edge.rel.reason === 'jcl-step'),
       ),
-    ).toEqual(['DIRECT → AMSSTEP', 'DIRECT → DB2STEP', 'DIRECT → SORTSTEP']);
+    ).toEqual(['GNXJOB02 → GNXSTP02', 'GNXJOB02 → GNXSTP03', 'GNXJOB02 → GNXSTP04']);
 
     const sysinParents = getRelationships(result, 'CONTAINS').filter(
       (edge) => edge.rel.reason === 'jcl-sysin' || edge.rel.reason === 'jcl-control-input',
     );
     expect(edgeSet(sysinParents)).toEqual([
-      'AMSSTEP → SYSIN',
-      'DB2STEP → SYSTSIN',
-      'SORTSTEP → SYSIN',
+      'GNXSTP02 → SYSIN',
+      'GNXSTP03 → SYSIN',
+      'GNXSTP04 → SYSTSIN',
     ]);
   });
 
@@ -90,11 +90,11 @@ GOBACK.`,
   it('extracts datasets referenced by IDCAMS and DB2 control cards', () => {
     const codeElements = getNodesByLabel(result, 'CodeElement');
     for (const dataset of [
-      'APP.OLD.DATA',
-      'APP.NEW.DATA',
-      'APP.INPUT',
-      'APP.OUTPUT',
-      'APP.LOADLIB',
+      'GNX.OLD.DATA',
+      'GNX.NEW.DATA',
+      'GNX.INPUT',
+      'GNX.OUTPUT',
+      'GNX.LOADLIB',
     ]) {
       expect(codeElements).toContain(dataset);
     }
@@ -107,13 +107,13 @@ GOBACK.`,
           (edge) => edge.rel.reason === 'jcl-sysin-run-program',
         ),
       ),
-    ).toEqual(['TSO-DB2 RUN → PAYPGM']);
+    ).toEqual(['TSO-DB2 RUN → GNXPGM03']);
     expect(
       edgeSet(
         getRelationships(result, 'ACCESSES').filter(
           (edge) => edge.rel.reason === 'jcl-sysin-db2-plan',
         ),
       ),
-    ).toEqual(['TSO-DB2 RUN → PAYPLAN']);
+    ).toEqual(['TSO-DB2 RUN → GNXPLN01']);
   });
 });

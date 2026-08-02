@@ -333,11 +333,11 @@ describe('extractCobolSymbolsWithRegex', () => {
     it('accumulates multiline data-item clauses without a continuation indicator', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
-        '       PROGRAM-ID. TESTPROG.',
+        '       PROGRAM-ID. GNXTST01.',
         '      DATA DIVISION.',
         '      WORKING-STORAGE SECTION.',
         '           05 WS-PROGRAM PIC X(8) VALUE',
-        "              'TARGET01'.",
+        "              'GNXTGT01'.",
         '           05 WS-COUNT',
         '              PIC 9(4)',
         '              USAGE COMP-3',
@@ -347,7 +347,7 @@ describe('extractCobolSymbolsWithRegex', () => {
 
       expect(r.dataItems.find((item) => item.name === 'WS-PROGRAM')).toMatchObject({
         pic: 'X(8)',
-        values: ['TARGET01'],
+        values: ['GNXTGT01'],
       });
       expect(r.dataItems.find((item) => item.name === 'WS-COUNT')).toMatchObject({
         pic: '9(4)',

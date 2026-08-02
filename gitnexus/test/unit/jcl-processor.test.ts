@@ -14,11 +14,11 @@ function addFile(graph: ReturnType<typeof createKnowledgeGraph>, filePath: strin
 describe('processJclFiles', () => {
   it('attaches direct SYSIN to an EXEC PGM step when the job has no PROC', () => {
     const graph = createKnowledgeGraph();
-    const filePath = 'jobs/SORTJOB.jcl';
+    const filePath = 'jobs/GNXJOB03.jcl';
     addFile(graph, filePath);
     const job = [
-      '//SORTJOB  JOB (ACCT)',
-      '//SORTSTEP EXEC PGM=SORT',
+      '//GNXJOB03 JOB (GNXACCT)',
+      '//GNXSTP02 EXEC PGM=SORT',
       '//SYSIN    DD *',
       '  SORT FIELDS=(1,10,CH,A)',
       '/*',
@@ -29,7 +29,7 @@ describe('processJclFiles', () => {
 
     const step = graph.nodes.find(
       (node) =>
-        node.properties.name === 'SORTSTEP' && node.properties.description === 'jcl-step pgm:SORT',
+        node.properties.name === 'GNXSTP02' && node.properties.description === 'jcl-step pgm:SORT',
     );
     const sysin = graph.nodes.find(
       (node) =>
@@ -65,33 +65,33 @@ describe('processJclFiles', () => {
 
   it('materializes JOB -> PROC -> internal step -> SYSIN across files', () => {
     const graph = createKnowledgeGraph();
-    const jobPath = 'jobs/PAYJOB.jcl';
-    const procPath = 'procs/PAYPROC.proc';
+    const jobPath = 'jobs/GNXJOB01.jcl';
+    const procPath = 'procs/GNXPRC01.proc';
     addFile(graph, jobPath);
     addFile(graph, procPath);
 
-    const payProgramId = generateId('Module', 'programs/PAYPGM.cbl:PAYPGM');
+    const payProgramId = generateId('Module', 'programs/GNXPGM03.cbl:GNXPGM03');
     graph.addNode({
       id: payProgramId,
       label: 'Module',
       properties: {
-        name: 'PAYPGM',
-        filePath: 'programs/PAYPGM.cbl',
+        name: 'GNXPGM03',
+        filePath: 'programs/GNXPGM03.cbl',
         description: 'cobol-program',
       },
     });
 
     const job = [
-      '//PAYJOB   JOB (ACCT)',
-      '//RUNPAY   EXEC PROC=PAYPROC',
-      '//PSTEP.SYSIN DD *,DLM=@@',
+      '//GNXJOB01 JOB (GNXACCT)',
+      '//GNXRUN01 EXEC PROC=GNXPRC01',
+      '//GNXSTP01.SYSIN DD *,DLM=@@',
       '  SORT FIELDS=COPY',
       '@@',
     ].join('\n');
     const proc = [
-      '//PAYPROC  PROC',
-      '//PSTEP    EXEC PGM=PAYPGM',
-      '//SYSIN    DD DSN=APP.DEFAULT.CARDS,DISP=SHR',
+      '//GNXPRC01 PROC',
+      '//GNXSTP01 EXEC PGM=GNXPGM03',
+      '//SYSIN    DD DSN=GNX.DEFAULT.CARDS,DISP=SHR',
       '// PEND',
     ].join('\n');
 
@@ -127,13 +127,13 @@ describe('processJclFiles', () => {
       if (!found) throw new Error(`missing ${descriptionPrefix} node ${name}`);
       return found;
     };
-    const jobNode = requireNode('PAYJOB', 'jcl-job');
-    const invocationNode = requireNode('RUNPAY', 'jcl-step');
-    const procNode = requireNode('PAYPROC', 'jcl-proc-cataloged');
-    const procStepNode = requireNode('PSTEP', 'jcl-proc-step');
+    const jobNode = requireNode('GNXJOB01', 'jcl-job');
+    const invocationNode = requireNode('GNXRUN01', 'jcl-step');
+    const procNode = requireNode('GNXPRC01', 'jcl-proc-cataloged');
+    const procStepNode = requireNode('GNXSTP01', 'jcl-proc-step');
     const defaultSysin = requireNode('SYSIN', 'jcl-sysin');
-    const overrideSysin = requireNode('PSTEP.SYSIN', 'jcl-sysin');
-    const datasetNode = requireNode('APP.DEFAULT.CARDS', 'jcl-dataset');
+    const overrideSysin = requireNode('GNXSTP01.SYSIN', 'jcl-sysin');
+    const datasetNode = requireNode('GNX.DEFAULT.CARDS', 'jcl-dataset');
 
     expect(overrideSysin.properties.content).toBe('  SORT FIELDS=COPY');
     expect(overrideSysin.properties.description).toContain('override:true');

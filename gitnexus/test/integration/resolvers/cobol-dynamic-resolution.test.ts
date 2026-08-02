@@ -18,29 +18,29 @@ describe('COBOL dynamic CALL and CICS target resolution', () => {
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-cobol-dynamic-'));
     writeFixtureRepo(root, {
-      'CALLER.cbl': `>>SOURCE FREE
+      'GNXCALLR.cbl': `>>SOURCE FREE
 IDENTIFICATION DIVISION.
-PROGRAM-ID. CALLER.
+PROGRAM-ID. GNXCALLR.
 DATA DIVISION.
 WORKING-STORAGE SECTION.
-01 WS-CALL PIC X(8) VALUE 'TARGETA'.
+01 WS-CALL PIC X(8) VALUE 'GNXTGTA1'.
 01 WS-LINK-SOURCE PIC X(8).
 01 WS-LINK PIC X(8).
 01 WS-LINK-VALUE PIC X(8) VALUE
-  'TARGETC'.
+  'GNXTGTC1'.
 01 WS-EXTERNAL PIC X(8) VALUE
-  'EXTMOD'.
+  'GNXEXT01'.
 01 WS-TRANS PIC X(4).
-01 WS-MAP PIC X(8) VALUE 'MAPA'.
+01 WS-MAP PIC X(8) VALUE 'GNXMAP01'.
 01 WS-FILE PIC X(8).
-01 WS-QUEUE-SOURCE PIC X(8) VALUE 'QUEUEA'.
+01 WS-QUEUE-SOURCE PIC X(8) VALUE 'GNXQUE01'.
 01 WS-QUEUE PIC X(8).
 PROCEDURE DIVISION.
 MAIN.
-MOVE 'TARGETB' TO WS-LINK-SOURCE.
+MOVE 'GNXTGTB1' TO WS-LINK-SOURCE.
 MOVE WS-LINK-SOURCE TO WS-LINK.
-MOVE 'TRN1' TO WS-TRANS.
-MOVE 'FILEA' TO WS-FILE.
+MOVE 'GNX1' TO WS-TRANS.
+MOVE 'GNXFIL01' TO WS-FILE.
 MOVE WS-QUEUE-SOURCE TO WS-QUEUE.
 CALL WS-CALL.
 EXEC CICS LINK PROGRAM(WS-LINK) END-EXEC.
@@ -51,21 +51,21 @@ EXEC CICS SEND MAP(WS-MAP) END-EXEC.
 EXEC CICS READ FILE(WS-FILE) END-EXEC.
 EXEC CICS WRITEQ TS QUEUE(WS-QUEUE) END-EXEC.
 STOP RUN.`,
-      'TARGETA.cbl': `>>SOURCE FREE
+      'GNXTGTA1.cbl': `>>SOURCE FREE
 IDENTIFICATION DIVISION.
-PROGRAM-ID. TARGETA.
+PROGRAM-ID. GNXTGTA1.
 PROCEDURE DIVISION.
 MAIN.
 GOBACK.`,
-      'TARGETB.cbl': `>>SOURCE FREE
+      'GNXTGTB1.cbl': `>>SOURCE FREE
 IDENTIFICATION DIVISION.
-PROGRAM-ID. TARGETB.
+PROGRAM-ID. GNXTGTB1.
 PROCEDURE DIVISION.
 MAIN.
 GOBACK.`,
-      'TARGETC.cbl': `>>SOURCE FREE
+      'GNXTGTC1.cbl': `>>SOURCE FREE
 IDENTIFICATION DIVISION.
-PROGRAM-ID. TARGETC.
+PROGRAM-ID. GNXTGTC1.
 PROCEDURE DIVISION.
 MAIN.
 GOBACK.`,
@@ -82,7 +82,7 @@ GOBACK.`,
     const edges = getRelationships(result, 'CALLS').filter(
       (edge) => edge.rel.reason === 'cobol-call-dynamic',
     );
-    expect(edgeSet(edges)).toEqual(['CALLER → TARGETA']);
+    expect(edgeSet(edges)).toEqual(['GNXCALLR → GNXTGTA1']);
     expect(edges[0]?.rel.confidence).toBe(0.8);
   });
 
@@ -90,7 +90,7 @@ GOBACK.`,
     const edges = getRelationships(result, 'CALLS').filter(
       (edge) => edge.rel.reason === 'cics-link-dynamic',
     );
-    expect(edgeSet(edges)).toEqual(['CALLER → TARGETB', 'CALLER → TARGETC']);
+    expect(edgeSet(edges)).toEqual(['GNXCALLR → GNXTGTB1', 'GNXCALLR → GNXTGTC1']);
     expect(edges.every((edge) => edge.rel.confidence === 0.8)).toBe(true);
   });
 
@@ -98,8 +98,8 @@ GOBACK.`,
     const edges = getRelationships(result, 'CALLS').filter(
       (edge) => edge.rel.reason === 'cics-link-dynamic-external',
     );
-    expect(edgeSet(edges)).toEqual(['CALLER → EXTMOD']);
-    expect(edges[0]?.rel.targetId).toBe('Module:<external>:EXTMOD');
+    expect(edgeSet(edges)).toEqual(['GNXCALLR → GNXEXT01']);
+    expect(edges[0]?.rel.targetId).toBe('Module:<external>:GNXEXT01');
     expect(edges[0]?.targetLabel).toBe('Module');
     expect(edges[0]?.targetFilePath).toBe('<external>');
     expect(edges[0]?.rel.confidence).toBe(0.8);
@@ -109,7 +109,7 @@ GOBACK.`,
     const edges = getRelationships(result, 'CALLS').filter(
       (edge) => edge.rel.reason === 'cics-start-transid-dynamic',
     );
-    expect(edgeSet(edges)).toEqual(['CALLER → TRN1']);
+    expect(edgeSet(edges)).toEqual(['GNXCALLR → GNX1']);
     expect(edges[0]?.targetLabel).toBe('CodeElement');
   });
 
@@ -118,9 +118,9 @@ GOBACK.`,
       edge.rel.reason.endsWith('-dynamic'),
     );
     expect(edgeSet(dynamicAccesses)).toEqual([
-      'EXEC CICS READ → FILEA',
-      'EXEC CICS SEND MAP → MAPA',
-      'EXEC CICS WRITEQ TS → QUEUEA',
+      'EXEC CICS READ → GNXFIL01',
+      'EXEC CICS SEND MAP → GNXMAP01',
+      'EXEC CICS WRITEQ TS → GNXQUE01',
     ]);
   });
 
@@ -128,15 +128,15 @@ GOBACK.`,
     const codeElements = getNodesByLabelFull(result, 'CodeElement');
     expect(
       codeElements.find((node) => node.name === 'CALL WS-CALL')?.properties.description,
-    ).toContain('resolved-targets:[TARGETA]');
+    ).toContain('resolved-targets:[GNXTGTA1]');
     expect(
       codeElements.find((node) => node.name === 'CICS LINK WS-LINK')?.properties.description,
-    ).toContain('resolved-targets:[TARGETB]');
+    ).toContain('resolved-targets:[GNXTGTB1]');
     expect(
       codeElements.find((node) => node.name === 'CICS LINK WS-LINK-VALUE')?.properties.description,
-    ).toContain('resolved-targets:[TARGETC]');
+    ).toContain('resolved-targets:[GNXTGTC1]');
     expect(
       codeElements.find((node) => node.name === 'CICS LINK WS-EXTERNAL')?.properties.description,
-    ).toContain('resolved-targets:[EXTMOD]');
+    ).toContain('resolved-targets:[GNXEXT01]');
   });
 });

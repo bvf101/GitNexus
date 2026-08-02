@@ -9,7 +9,7 @@ describe('interpretJclSysin', () => {
       [
         '  SORT FIELDS=(1,10,CH,A)',
         "  INCLUDE COND=(11,1,CH,EQ,C'A')",
-        '  OUTFIL FNAMES=SORTOUT',
+        '  OUTFIL FNAMES=GNXOUT01',
       ].join('\n'),
     );
 
@@ -22,17 +22,17 @@ describe('interpretJclSysin', () => {
       'IDCAMS',
       'SYSIN',
       [
-        '  DELETE APP.OLD.DATA',
-        '  DEFINE CLUSTER(NAME(APP.NEW.DATA) -',
+        '  DELETE GNX.OLD.DATA',
+        '  DEFINE CLUSTER(NAME(GNX.NEW.DATA) -',
         '          RECORDSIZE(80 80))',
-        '  REPRO INDATASET(APP.INPUT) OUTDATASET(APP.OUTPUT)',
+        '  REPRO INDATASET(GNX.INPUT) OUTDATASET(GNX.OUTPUT)',
       ].join('\n'),
     );
 
     expect(commands.map((command) => command.verb)).toEqual(['DELETE', 'DEFINE', 'REPRO']);
-    expect(commands[0].datasets).toEqual(['APP.OLD.DATA']);
-    expect(commands[1].datasets).toEqual(['APP.NEW.DATA']);
-    expect(commands[2].datasets).toEqual(['APP.INPUT', 'APP.OUTPUT']);
+    expect(commands[0].datasets).toEqual(['GNX.OLD.DATA']);
+    expect(commands[1].datasets).toEqual(['GNX.NEW.DATA']);
+    expect(commands[2].datasets).toEqual(['GNX.INPUT', 'GNX.OUTPUT']);
     expect(commands[1].endLineOffset).toBe(2);
   });
 
@@ -41,8 +41,8 @@ describe('interpretJclSysin', () => {
       'IKJEFT1B',
       'SYSTSIN',
       [
-        '  DSN SYSTEM(DB2P)',
-        "  RUN PROGRAM(PAYPGM) PLAN(PAYPLAN) LIB('APP.LOADLIB')",
+        '  DSN SYSTEM(GXDB)',
+        "  RUN PROGRAM(GNXPGM03) PLAN(GNXPLN01) LIB('GNX.LOADLIB')",
         '  END',
       ].join('\n'),
     );
@@ -50,14 +50,14 @@ describe('interpretJclSysin', () => {
     expect(commands.map((command) => command.verb)).toEqual(['DSN', 'RUN', 'END']);
     expect(commands[1]).toMatchObject({
       utility: 'tso-db2',
-      programs: ['PAYPGM'],
-      plans: ['PAYPLAN'],
-      datasets: ['APP.LOADLIB'],
+      programs: ['GNXPGM03'],
+      plans: ['GNXPLN01'],
+      datasets: ['GNX.LOADLIB'],
     });
   });
 
   it('keeps unknown-program SYSIN as a generic command block', () => {
-    const commands = interpretJclSysin('MYUTIL', 'SYSIN', '  CONTROL A=1\n  OPTION B=2');
+    const commands = interpretJclSysin('GNXUTL01', 'SYSIN', '  CONTROL A=1\n  OPTION B=2');
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({ utility: 'generic', verb: 'CONTROL' });
   });

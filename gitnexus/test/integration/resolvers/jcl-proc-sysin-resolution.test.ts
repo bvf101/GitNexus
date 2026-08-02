@@ -18,22 +18,22 @@ describe('JCL JOB -> PROC -> SYSIN resolution', () => {
   beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-jcl-proc-sysin-'));
     writeFixtureRepo(root, {
-      'jobs/PAYJOB.jcl': [
-        '//PAYJOB   JOB (ACCT)',
-        '//RUNPAY   EXEC PROC=PAYPROC',
-        '//PSTEP.SYSIN DD *,DLM=@@',
+      'jobs/GNXJOB01.jcl': [
+        '//GNXJOB01 JOB (GNXACCT)',
+        '//GNXRUN01 EXEC PROC=GNXPRC01',
+        '//GNXSTP01.SYSIN DD *,DLM=@@',
         '  SORT FIELDS=COPY',
         '@@',
       ].join('\n'),
-      'procs/PAYPROC.proc': [
-        '//PAYPROC  PROC',
-        '//PSTEP    EXEC PGM=PAYPGM',
-        '//SYSIN    DD DSN=APP.DEFAULT.CARDS,DISP=SHR',
+      'procs/GNXPRC01.proc': [
+        '//GNXPRC01 PROC',
+        '//GNXSTP01 EXEC PGM=GNXPGM03',
+        '//SYSIN    DD DSN=GNX.DEFAULT.CARDS,DISP=SHR',
         '// PEND',
       ].join('\n'),
-      'programs/PAYPGM.cbl': `>>SOURCE FREE
+      'programs/GNXPGM03.cbl': `>>SOURCE FREE
 IDENTIFICATION DIVISION.
-PROGRAM-ID. PAYPGM.
+PROGRAM-ID. GNXPGM03.
 PROCEDURE DIVISION.
 MAIN.
 GOBACK.`,
@@ -51,7 +51,7 @@ GOBACK.`,
       edgeSet(
         getRelationships(result, 'CALLS').filter((edge) => edge.rel.reason === 'jcl-exec-proc'),
       ),
-    ).toEqual(['RUNPAY → PAYPROC']);
+    ).toEqual(['GNXRUN01 → GNXPRC01']);
   });
 
   it('links the PROC to its internal step and program', () => {
@@ -59,12 +59,12 @@ GOBACK.`,
       edgeSet(
         getRelationships(result, 'CONTAINS').filter((edge) => edge.rel.reason === 'jcl-proc-step'),
       ),
-    ).toEqual(['PAYPROC → PSTEP']);
+    ).toEqual(['GNXPRC01 → GNXSTP01']);
     expect(
       edgeSet(
         getRelationships(result, 'CALLS').filter((edge) => edge.rel.reason === 'jcl-exec-pgm'),
       ),
-    ).toEqual(['PSTEP → PAYPGM']);
+    ).toEqual(['GNXSTP01 → GNXPGM03']);
   });
 
   it('attaches default and overridden SYSIN inputs to the PROC step', () => {
@@ -72,10 +72,10 @@ GOBACK.`,
       edgeSet(
         getRelationships(result, 'CONTAINS').filter((edge) => edge.rel.reason === 'jcl-sysin'),
       ),
-    ).toEqual(['PSTEP → PSTEP.SYSIN', 'PSTEP → SYSIN']);
+    ).toEqual(['GNXSTP01 → GNXSTP01.SYSIN', 'GNXSTP01 → SYSIN']);
 
     const codeElements = getNodesByLabelFull(result, 'CodeElement');
-    const override = codeElements.find((node) => node.name === 'PSTEP.SYSIN');
+    const override = codeElements.find((node) => node.name === 'GNXSTP01.SYSIN');
     expect(override?.properties.description).toContain('mode:inline');
     expect(override?.properties.description).toContain('override:true');
   });
@@ -85,13 +85,13 @@ GOBACK.`,
       edgeSet(
         getRelationships(result, 'CALLS').filter((edge) => edge.rel.reason === 'jcl-dd:SYSIN'),
       ),
-    ).toEqual(['PSTEP → APP.DEFAULT.CARDS']);
+    ).toEqual(['GNXSTP01 → GNX.DEFAULT.CARDS']);
     expect(
       edgeSet(
         getRelationships(result, 'ACCESSES').filter(
           (edge) => edge.rel.reason === 'jcl-sysin-dataset',
         ),
       ),
-    ).toEqual(['SYSIN → APP.DEFAULT.CARDS']);
+    ).toEqual(['SYSIN → GNX.DEFAULT.CARDS']);
   });
 });

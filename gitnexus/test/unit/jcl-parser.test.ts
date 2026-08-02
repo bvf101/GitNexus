@@ -54,10 +54,10 @@ describe('parseJcl', () => {
     });
 
     it('extracts step with explicit PROC=name syntax', () => {
-      const jcl = ['//MYJOB   JOB (ACCT)', '//STEP1   EXEC PROC=MYPROC,ENV=PROD'].join('\n');
+      const jcl = ['//GNXJOB04 JOB (GNXACCT)', '//GNXSTP05 EXEC PROC=GNXPRC02,ENV=GNX'].join('\n');
       const r = parseJcl(jcl, 'test.jcl');
       expect(r.steps).toHaveLength(1);
-      expect(r.steps[0]).toMatchObject({ name: 'STEP1', proc: 'MYPROC' });
+      expect(r.steps[0]).toMatchObject({ name: 'GNXSTP05', proc: 'GNXPRC02' });
     });
 
     it('associates step with current job', () => {
@@ -116,13 +116,13 @@ describe('parseJcl', () => {
 
     it('captures inline SYSIN DD * content and its source range', () => {
       const jcl = [
-        '//MYJOB   JOB (ACCT)',
-        '//STEP1   EXEC PGM=SORT',
+        '//GNXJOB04 JOB (GNXACCT)',
+        '//GNXSTP05 EXEC PGM=SORT',
         '//SYSIN   DD *',
         '  SORT FIELDS=COPY',
         "  INCLUDE COND=(1,1,CH,EQ,C'A')",
         '/*',
-        '//STEP2   EXEC PGM=IEFBR14',
+        '//GNXSTP06 EXEC PGM=IEFBR14',
       ].join('\n');
       const r = parseJcl(jcl, 'test.jcl');
 
@@ -130,67 +130,67 @@ describe('parseJcl', () => {
       expect(r.ddStatements[0]).toMatchObject({
         ddName: 'SYSIN',
         qualifiedName: 'SYSIN',
-        stepName: 'STEP1',
+        stepName: 'GNXSTP05',
         inputType: 'inline',
         delimiter: '/*',
         line: 3,
         endLine: 6,
         content: "  SORT FIELDS=COPY\n  INCLUDE COND=(1,1,CH,EQ,C'A')",
       });
-      expect(r.steps.map((step) => step.name)).toEqual(['STEP1', 'STEP2']);
+      expect(r.steps.map((step) => step.name)).toEqual(['GNXSTP05', 'GNXSTP06']);
     });
 
     it('captures DD DATA with a custom delimiter, including // payload lines', () => {
       const jcl = [
-        '//MYJOB   JOB (ACCT)',
-        '//STEP1   EXEC PGM=IDCAMS',
+        '//GNXJOB04 JOB (GNXACCT)',
+        '//GNXSTP05 EXEC PGM=IDCAMS',
         '//SYSIN   DD DATA,DLM=@@',
-        '// DELETE APP.OLD.DATA',
+        '// DELETE GNX.OLD.DATA',
         '  SET MAXCC=0',
         '@@',
-        '//STEP2   EXEC PGM=IEFBR14',
+        '//GNXSTP06 EXEC PGM=IEFBR14',
       ].join('\n');
       const r = parseJcl(jcl, 'test.jcl');
 
       expect(r.ddStatements[0]).toMatchObject({
         inputType: 'data',
         delimiter: '@@',
-        content: '// DELETE APP.OLD.DATA\n  SET MAXCC=0',
+        content: '// DELETE GNX.OLD.DATA\n  SET MAXCC=0',
         endLine: 6,
       });
-      expect(r.steps.map((step) => step.name)).toEqual(['STEP1', 'STEP2']);
+      expect(r.steps.map((step) => step.name)).toEqual(['GNXSTP05', 'GNXSTP06']);
     });
 
     it('identifies dataset-backed SYSIN', () => {
       const jcl = [
-        '//MYJOB   JOB (ACCT)',
-        '//STEP1   EXEC PGM=SORT',
-        '//SYSIN   DD DSN=APP.SORT.CARDS,DISP=SHR',
+        '//GNXJOB04 JOB (GNXACCT)',
+        '//GNXSTP05 EXEC PGM=SORT',
+        '//SYSIN   DD DSN=GNX.SORT.CARDS,DISP=SHR',
       ].join('\n');
       const r = parseJcl(jcl, 'test.jcl');
       expect(r.ddStatements[0]).toMatchObject({
         ddName: 'SYSIN',
         inputType: 'dataset',
-        dataset: 'APP.SORT.CARDS',
+        dataset: 'GNX.SORT.CARDS',
       });
     });
 
     it('identifies a qualified PROC step DD override', () => {
       const jcl = [
-        '//MYJOB   JOB (ACCT)',
-        '//RUNPROC EXEC PROC=PAYPROC',
-        '//PSTEP.SYSIN DD *',
+        '//GNXJOB04 JOB (GNXACCT)',
+        '//GNXRUN02 EXEC PROC=GNXPRC01',
+        '//GNXSTP01.SYSIN DD *',
         '  SORT FIELDS=COPY',
         '/*',
       ].join('\n');
       const r = parseJcl(jcl, 'test.jcl');
       expect(r.ddStatements[0]).toMatchObject({
         ddName: 'SYSIN',
-        qualifiedName: 'PSTEP.SYSIN',
-        jobName: 'MYJOB',
-        stepName: 'PSTEP',
-        invocationStepName: 'RUNPROC',
-        overridePath: ['PSTEP'],
+        qualifiedName: 'GNXSTP01.SYSIN',
+        jobName: 'GNXJOB04',
+        stepName: 'GNXSTP01',
+        invocationStepName: 'GNXRUN02',
+        overridePath: ['GNXSTP01'],
         inputType: 'inline',
       });
     });
@@ -201,34 +201,38 @@ describe('parseJcl', () => {
   describe('PROC definitions', () => {
     it('extracts in-stream PROC with name', () => {
       const jcl = [
-        '//MYJOB   JOB (ACCT)',
-        '//MYPROC  PROC',
-        '//STEP1   EXEC PGM=IEFBR14',
+        '//GNXJOB04 JOB (GNXACCT)',
+        '//GNXPRC02 PROC',
+        '//GNXSTP05 EXEC PGM=IEFBR14',
         '// PEND',
       ].join('\n');
       const r = parseJcl(jcl, 'test.jcl');
       expect(r.procs).toHaveLength(1);
-      expect(r.procs[0].name).toBe('MYPROC');
+      expect(r.procs[0].name).toBe('GNXPRC02');
       expect(r.procs[0].isInStream).toBe(true);
-      expect(r.steps[0]).toMatchObject({ ownerProc: 'MYPROC', jobName: 'MYJOB' });
+      expect(r.steps[0]).toMatchObject({ ownerProc: 'GNXPRC02', jobName: 'GNXJOB04' });
     });
 
     it('classifies a standalone .proc member as catalogued', () => {
-      const jcl = ['//PAYPROC PROC', '//PSTEP   EXEC PGM=PAYPGM', '// PEND'].join('\n');
-      const r = parseJcl(jcl, 'PAYPROC.proc');
+      const jcl = ['//GNXPRC01 PROC', '//GNXSTP01 EXEC PGM=GNXPGM03', '// PEND'].join('\n');
+      const r = parseJcl(jcl, 'GNXPRC01.proc');
       expect(r.procs[0]).toMatchObject({
-        name: 'PAYPROC',
+        name: 'GNXPRC01',
         isInStream: false,
         line: 1,
         endLine: 3,
       });
-      expect(r.steps[0]).toMatchObject({ name: 'PSTEP', ownerProc: 'PAYPROC', jobName: '' });
+      expect(r.steps[0]).toMatchObject({
+        name: 'GNXSTP01',
+        ownerProc: 'GNXPRC01',
+        jobName: '',
+      });
     });
 
     it('uses the catalogued member file name for an unnamed PROC statement', () => {
-      const r = parseJcl('// PROC\n//PSTEP EXEC PGM=PAYPGM\n// PEND', 'PAYPROC.proc');
-      expect(r.procs[0]).toMatchObject({ name: 'PAYPROC', isInStream: false });
-      expect(r.steps[0].ownerProc).toBe('PAYPROC');
+      const r = parseJcl('// PROC\n//GNXSTP01 EXEC PGM=GNXPGM03\n// PEND', 'GNXPRC01.proc');
+      expect(r.procs[0]).toMatchObject({ name: 'GNXPRC01', isInStream: false });
+      expect(r.steps[0].ownerProc).toBe('GNXPRC01');
     });
 
     it('handles PROC/PEND pairs', () => {
