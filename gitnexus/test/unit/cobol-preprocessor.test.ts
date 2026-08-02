@@ -330,6 +330,32 @@ describe('extractCobolSymbolsWithRegex', () => {
       expect(wsAmount!.usage).toBe('COMP-3');
     });
 
+    it('accumulates multiline data-item clauses without a continuation indicator', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      DATA DIVISION.',
+        '      WORKING-STORAGE SECTION.',
+        '           05 WS-PROGRAM PIC X(8) VALUE',
+        "              'TARGET01'.",
+        '           05 WS-COUNT',
+        '              PIC 9(4)',
+        '              USAGE COMP-3',
+        '              VALUE 1.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+
+      expect(r.dataItems.find((item) => item.name === 'WS-PROGRAM')).toMatchObject({
+        pic: 'X(8)',
+        values: ['TARGET01'],
+      });
+      expect(r.dataItems.find((item) => item.name === 'WS-COUNT')).toMatchObject({
+        pic: '9(4)',
+        usage: 'COMP-3',
+        values: ['1'],
+      });
+    });
+
     it('extracts 88-level condition names with values', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',

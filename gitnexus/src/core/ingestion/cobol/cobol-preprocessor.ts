@@ -1119,6 +1119,12 @@ export function extractCobolSymbolsWithRegex(
   let pendingFdName: string | null = null;
   let pendingFdLine = 0;
 
+  // Standard data-item clauses may continue on ordinary source lines without
+  // a fixed-format continuation indicator (for example VALUE on one line and
+  // its literal on the next). Keep the accumulated clause text until the next
+  // declaration or terminating period so attributes are parsed as one unit.
+  let pendingDataItem: { index: number; clauses: string } | null = null;
+
   // Continuation line buffer
   let pendingLine: string | null = null;
   let pendingLineNumber = 0;
@@ -1378,6 +1384,7 @@ export function extractCobolSymbolsWithRegex(
       flushCallAccum();
       flushSort();
       flushInspect();
+      pendingDataItem = null;
 
       const divName = divMatch[1].toUpperCase();
       switch (divName) {
@@ -1422,6 +1429,7 @@ export function extractCobolSymbolsWithRegex(
     const secMatch = line.match(RE_SECTION);
     if (secMatch) {
       flushSelect();
+      pendingDataItem = null;
 
       const secName = secMatch[1].toUpperCase();
       switch (secName) {
@@ -1802,9 +1810,39 @@ export function extractCobolSymbolsWithRegex(
   // =========================================================================
   // DATA DIVISION extraction
   // =========================================================================
+  function applyDataItemClauses(
+    item: CobolRegexResults['dataItems'][number],
+    clauseText: string,
+  ): void {
+    const clauses = parseDataItemClauses(clauseText);
+    if (clauses.pic) item.pic = clauses.pic;
+    if (clauses.usage) item.usage = clauses.usage;
+    if (clauses.occurs !== undefined) item.occurs = clauses.occurs;
+    if (clauses.dependingOn) item.dependingOn = clauses.dependingOn;
+    if (clauses.redefines) item.redefines = clauses.redefines;
+    if (clauses.value) item.values = [clauses.value];
+    if (clauses.isExternal) item.isExternal = true;
+    if (clauses.isGlobal) item.isGlobal = true;
+  }
+
   function extractData(line: string, lineNum: number): void {
-    // FD entry
     const fdMatch = line.match(RE_FD);
+    const lv88Match = line.match(RE_88_LEVEL);
+    const lv66Match = line.match(RE_66_LEVEL);
+    const dataMatch = line.match(RE_DATA_ITEM);
+    const startsNewDeclaration = Boolean(fdMatch || lv88Match || lv66Match || dataMatch);
+
+    if (pendingDataItem && !startsNewDeclaration) {
+      pendingDataItem.clauses += ` ${line.trim()}`;
+      const item = result.dataItems[pendingDataItem.index];
+      if (item) applyDataItemClauses(item, pendingDataItem.clauses);
+      if (/\.\s*$/.test(line)) pendingDataItem = null;
+      return;
+    }
+
+    if (startsNewDeclaration) pendingDataItem = null;
+
+    // FD entry
     if (fdMatch) {
       // Flush any previous FD without a record
       if (pendingFdName !== null) {
@@ -1816,7 +1854,6 @@ export function extractCobolSymbolsWithRegex(
     }
 
     // 88-level condition names
-    const lv88Match = line.match(RE_88_LEVEL);
     if (lv88Match) {
       const name = lv88Match[1];
       const values = parseConditionValues(lv88Match[2]);
@@ -1831,7 +1868,6 @@ export function extractCobolSymbolsWithRegex(
     }
 
     // Level 66 RENAMES
-    const lv66Match = line.match(RE_66_LEVEL);
     if (lv66Match) {
       result.dataItems.push({
         name: lv66Match[1],
@@ -1860,7 +1896,6 @@ export function extractCobolSymbolsWithRegex(
     }
 
     // Standard data items: level 01-49, 66, 77
-    const dataMatch = line.match(RE_DATA_ITEM);
     if (dataMatch) {
       const level = parseInt(dataMatch[1], 10);
       const name = dataMatch[2];
@@ -1871,24 +1906,17 @@ export function extractCobolSymbolsWithRegex(
 
       // Valid levels: 01-49, 66, 77
       if ((level >= 1 && level <= 49) || level === 66 || level === 77) {
-        const clauses = parseDataItemClauses(rest);
-
         const item: CobolRegexResults['dataItems'][number] = {
           name,
           level,
           line: lineNum,
           section: currentDataSection,
         };
-        if (clauses.pic) item.pic = clauses.pic;
-        if (clauses.usage) item.usage = clauses.usage;
-        if (clauses.occurs !== undefined) item.occurs = clauses.occurs;
-        if (clauses.dependingOn) item.dependingOn = clauses.dependingOn;
-        if (clauses.redefines) item.redefines = clauses.redefines;
-        if (clauses.value) item.values = [clauses.value];
-        if (clauses.isExternal) item.isExternal = true;
-        if (clauses.isGlobal) item.isGlobal = true;
+        applyDataItemClauses(item, rest);
 
+        const itemIndex = result.dataItems.length;
         result.dataItems.push(item);
+        if (!/\.\s*$/.test(line)) pendingDataItem = { index: itemIndex, clauses: rest };
 
         // If there's a pending FD and this is a 01-level, it's the FD's record
         if (pendingFdName !== null && level === 1) {

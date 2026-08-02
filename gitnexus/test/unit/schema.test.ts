@@ -222,6 +222,27 @@ describe('LadybugDB Schema', () => {
       }
     });
 
+    it('persists every label pair emitted by the COBOL regex processor', () => {
+      const declaredPairs = parseRelationSchemaPairs(RELATION_SCHEMA);
+      const cobolPairs = [
+        'Module|Property',
+        'Module|Constructor',
+        'Module|Namespace',
+        'Module|Record',
+        'Namespace|Function',
+        'CodeElement|Record',
+        'CodeElement|Property',
+        'Record|Record',
+      ];
+
+      for (const pair of cobolPairs) {
+        expect(
+          declaredPairs.has(pair),
+          `${pair.replace('|', '→')} must be accepted by the LadybugDB relation table`,
+        ).toBe(true);
+      }
+    });
+
     it('declares the Swift enum/property member-containment pairs (#2769)', () => {
       // Asserted through the runtime's own parser, not raw strings, so a
       // cosmetic DDL formatting change cannot fail this without a semantic

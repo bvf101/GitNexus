@@ -16,7 +16,7 @@
 import path from 'node:path';
 import { generateId } from '../../lib/utils.js';
 import { toZeroBasedLine } from './utils/line-base.js';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { SupportedLanguages, type GraphRelationship } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../graph/types.js';
 import {
   preprocessCobolSource,
@@ -287,6 +287,54 @@ export const processCobol = (
   // Remove orphan unresolved edges (cannot delete during Map.forEach iteration)
   for (const id of unresolvedToRemove) {
     graph.removeRelationship(id);
+  }
+
+  // Calls to programs outside the indexed source tree still carry valuable
+  // architecture information. The extractor already knows their exact target
+  // names (literal CALL or a bounded VALUE/MOVE candidate), but a relationship
+  // to a missing node cannot survive LadybugDB COPY. Materialize one synthetic
+  // Module per external target and replace the temporary unresolved edge with
+  // an explicit external edge so context/impact can traverse it.
+  const externalTargets = new Map<string, string>();
+  const externalCalls: GraphRelationship[] = [];
+  const unresolvedExternalIds: string[] = [];
+
+  graph.forEachRelationship((rel) => {
+    if (rel.type !== 'CALLS' || !rel.reason?.endsWith('-unresolved')) return;
+    const match = rel.targetId.match(/^Module:<unresolved>:(.+)$/);
+    if (!match) return;
+
+    const targetName = match[1];
+    const externalTargetId = `Module:<external>:${targetName}`;
+    externalTargets.set(externalTargetId, targetName);
+    const isDynamic = rel.reason.includes('-dynamic-');
+    externalCalls.push({
+      ...rel,
+      id: `${rel.id}:external`,
+      targetId: externalTargetId,
+      confidence: isDynamic ? 0.8 : 0.9,
+      reason: rel.reason.replace(/-unresolved$/, '-external'),
+    });
+    unresolvedExternalIds.push(rel.id);
+  });
+
+  for (const id of unresolvedExternalIds) {
+    graph.removeRelationship(id);
+  }
+  for (const [id, name] of externalTargets) {
+    graph.addNode({
+      id,
+      label: 'Module',
+      properties: {
+        name,
+        filePath: '<external>',
+        language: SupportedLanguages.Cobol,
+        description: 'External COBOL program target (source not present in index)',
+      },
+    });
+  }
+  for (const rel of externalCalls) {
+    graph.addRelationship(rel);
   }
 
   // ── 5. Process JCL files ───────────────────────────────────────────

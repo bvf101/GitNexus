@@ -26,6 +26,10 @@ WORKING-STORAGE SECTION.
 01 WS-CALL PIC X(8) VALUE 'TARGETA'.
 01 WS-LINK-SOURCE PIC X(8).
 01 WS-LINK PIC X(8).
+01 WS-LINK-VALUE PIC X(8) VALUE
+  'TARGETC'.
+01 WS-EXTERNAL PIC X(8) VALUE
+  'EXTMOD'.
 01 WS-TRANS PIC X(4).
 01 WS-MAP PIC X(8) VALUE 'MAPA'.
 01 WS-FILE PIC X(8).
@@ -40,6 +44,8 @@ MOVE 'FILEA' TO WS-FILE.
 MOVE WS-QUEUE-SOURCE TO WS-QUEUE.
 CALL WS-CALL.
 EXEC CICS LINK PROGRAM(WS-LINK) END-EXEC.
+EXEC CICS LINK PROGRAM(WS-LINK-VALUE) END-EXEC.
+EXEC CICS LINK PROGRAM(WS-EXTERNAL) END-EXEC.
 EXEC CICS START TRANSID(WS-TRANS) END-EXEC.
 EXEC CICS SEND MAP(WS-MAP) END-EXEC.
 EXEC CICS READ FILE(WS-FILE) END-EXEC.
@@ -54,6 +60,12 @@ GOBACK.`,
       'TARGETB.cbl': `>>SOURCE FREE
 IDENTIFICATION DIVISION.
 PROGRAM-ID. TARGETB.
+PROCEDURE DIVISION.
+MAIN.
+GOBACK.`,
+      'TARGETC.cbl': `>>SOURCE FREE
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TARGETC.
 PROCEDURE DIVISION.
 MAIN.
 GOBACK.`,
@@ -74,11 +86,22 @@ GOBACK.`,
     expect(edges[0]?.rel.confidence).toBe(0.8);
   });
 
-  it('resolves CICS LINK through literal and identifier MOVE propagation', () => {
+  it('resolves CICS LINK through multiline VALUE and identifier MOVE propagation', () => {
     const edges = getRelationships(result, 'CALLS').filter(
       (edge) => edge.rel.reason === 'cics-link-dynamic',
     );
-    expect(edgeSet(edges)).toEqual(['CALLER → TARGETB']);
+    expect(edgeSet(edges)).toEqual(['CALLER → TARGETB', 'CALLER → TARGETC']);
+    expect(edges.every((edge) => edge.rel.confidence === 0.8)).toBe(true);
+  });
+
+  it('materializes external dynamic targets so their CALLS edges can persist', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.rel.reason === 'cics-link-dynamic-external',
+    );
+    expect(edgeSet(edges)).toEqual(['CALLER → EXTMOD']);
+    expect(edges[0]?.rel.targetId).toBe('Module:<external>:EXTMOD');
+    expect(edges[0]?.targetLabel).toBe('Module');
+    expect(edges[0]?.targetFilePath).toBe('<external>');
     expect(edges[0]?.rel.confidence).toBe(0.8);
   });
 
@@ -109,5 +132,11 @@ GOBACK.`,
     expect(
       codeElements.find((node) => node.name === 'CICS LINK WS-LINK')?.properties.description,
     ).toContain('resolved-targets:[TARGETB]');
+    expect(
+      codeElements.find((node) => node.name === 'CICS LINK WS-LINK-VALUE')?.properties.description,
+    ).toContain('resolved-targets:[TARGETC]');
+    expect(
+      codeElements.find((node) => node.name === 'CICS LINK WS-EXTERNAL')?.properties.description,
+    ).toContain('resolved-targets:[EXTMOD]');
   });
 });

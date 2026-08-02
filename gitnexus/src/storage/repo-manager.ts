@@ -692,8 +692,21 @@ export interface RepoMeta {
  * CodeElement→Module, and Module→CodeElement relation pairs. These are required
  * for Job→step, step→program/PROC/dataset, and PROC→internal-step edges; older
  * LadybugDB relation tables cannot accept those pairs, so force a full re-analyze.
+ *
+ * v36: the COBOL regex processor's containment, entry-point, data-resource,
+ * SQL, CICS, and SORT edges require eight additional label pairs. The strict
+ * CSV relation router rejects these pairs when they are absent from the
+ * LadybugDB DDL, while an existing v35 index was created without them. Force a
+ * full re-analyze so the relation table is recreated with the complete COBOL
+ * endpoint contract.
+ *
+ * v37: multiline DATA clauses now seed VALUE-driven dynamic COBOL/CICS target
+ * resolution, and calls to programs outside the indexed source tree gain
+ * synthetic external Module nodes. Existing indexes lack both the recovered
+ * dynamic edges and persistent external call targets, so force a full
+ * re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 35;
+export const INCREMENTAL_SCHEMA_VERSION = 37;
 
 export interface IndexedRepo {
   repoPath: string;
