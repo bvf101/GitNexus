@@ -82,6 +82,28 @@ export interface ReferenceSite {
    * otherwise, in which case resolution is unchanged.
    */
   readonly rawQualifiedName?: string;
+  /**
+   * Top-level generic/template arguments the source wrote ON this reference —
+   * `class UserValidator : IValidator<string>` yields `['string']` on the
+   * `inherits` site whose `name` is `IValidator`.
+   *
+   * `name` is the BASE name and stays that way: every lookup in resolution is
+   * keyed by it, and one declaration answers for every instantiation of itself.
+   * This records what the erasure threw away, so a consumer that needs the
+   * INSTANTIATION — receiver-bound interface dispatch, which must not fan a
+   * `IValidator<string>` receiver out to an `IValidator<int>` implementor
+   * (#2912) — can ask for it without re-parsing the source.
+   *
+   * Derived generically from the anchor capture's own text (see
+   * `collectReferenceSites`), so no language query change is needed: an emitter
+   * whose `@reference.inherits` anchor spans the whole base gets this for free,
+   * and one whose anchor is the bare name simply leaves it absent.
+   *
+   * ABSENT MEANS UNKNOWN, never "not generic" — the two are indistinguishable
+   * here, and only the first is safe to act on. Consumers must fail OPEN on
+   * absence (keep the target), matching `SymbolDefinition.typeParameters`.
+   */
+  readonly typeArguments?: readonly string[];
   /** Source-text range of this reference. */
   readonly atRange: Range;
   /**
@@ -162,6 +184,30 @@ export interface ReferenceSite {
    * in callee position, so nothing changes for languages that never set it.
    */
   readonly inCalleePosition?: boolean;
+  /**
+   * This `inherits` site describes an embedded field written as a POINTER
+   * (`struct S { *T }`) rather than as a value (`struct S { T }`).
+   *
+   * Go's method-set rules make the two forms genuinely different, so the
+   * distinction cannot be normalized away without producing wrong answers
+   * (go.dev/ref/spec#Struct_types):
+   *
+   *   - `S` embeds `T`  → `MS(S)` and `MS(*S)` get promoted methods with
+   *                       receiver `T`; only `MS(*S)` also gets those with
+   *                       receiver `*T`.
+   *   - `S` embeds `*T` → `MS(S)` AND `MS(*S)` get promoted methods with
+   *                       receiver `T` **or** `*T`.
+   *
+   * So with `func (t *T) Ping()`, `S{T}` does not implement a `Ping` interface
+   * by value while `S{*T}` does. Collapsing the forms makes both answers the
+   * same, and one of them is then wrong.
+   *
+   * A POSITION FACT, like `inCalleePosition`: the capture layer records how the
+   * field was spelled and resolution decides what it means. Set only by
+   * languages with pointer-embedding semantics (Go today); absent everywhere
+   * else, so every other language's sites stay byte-identical.
+   */
+  readonly embeddedAsPointer?: boolean;
 }
 
 /**
